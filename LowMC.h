@@ -8,7 +8,7 @@
 const unsigned numofboxes = 49;    // Number of Sboxes
 const unsigned blocksize = 256;   // Block size in bits
 const unsigned keysize = 80; // Key size in bits
-const unsigned rounds = 11; // Number of rounds
+const unsigned rounds = 12; // Number of rounds
 
 const unsigned identitysize = blocksize - 3*numofboxes;
                   // Size of the identity part in the Sbox layer
