@@ -1,217 +1,480 @@
 #!/usr/bin/python3
+''' This script determines the number of rounds needed for security for
+    a given set of LowMC parameters. Use with '-h' flag for more information.
+'''
+
 from math import log2, ceil
 import argparse
+import itertools
 
-parser = argparse.ArgumentParser(
-            description='''Calculate the number of rounds for LowMC in dependence
-                           on a given parameter set.''')
-parser.add_argument('n', type=int,
-                    help='specifies the block size')
-parser.add_argument('m', type=int,
-                    help='specifies the number of Sboxes per nonlinear layer')
-parser.add_argument('d', type=int,
-                    help='specifies the data security')
-parser.add_argument('k', type=int,
-                    help='specifies the key size')
-group = parser.add_mutually_exclusive_group()
-group.add_argument('-v', '--verbose', action='store_true',
-                   help='print additional information')
-group.add_argument('-q', '--quiet', action='store_true',
-                   help='print only the total number of rounds')
 
-args = parser.parse_args()
+# Define what to consider a negligible probability
+NEGL_PROB = 2**(-100)
 
-#Definitions
-charbound = 2**(-100) # Defines what to consider a negligible probability
 
-def choose(z,n):
-    '''Calculates the binomial coefficients of z and n.'''
-    p = 1
-    q = 1
-    for i in range(n):
-        p *= z - i
-        q *= i+1
-    return p//q
+def main():
+    ''' Determine the rounds needed for security for the given
+        parameters.
+    '''
+    params = parse_program_arguments()
+    check_parameter_validity(params)
+    if params.verbosity == 'verbose':
+        print('-' * 46)
+        print('LowMC rounds determination')
+        print('-' * 46)
+        params.print()
+        print('-' * 46)
 
-def degterms(n, deg):
-    '''Calculate the number of possible terms of degree at most 'deg' in
-       n variables.'''
-    tms = 0
-    for d in range(deg + 1):
-        tms += choose(n, d)
-    return tms
+    if params.verbosity == 'verbose':
+        print('Calculating statistical rounds')
+    statistical_rounds = determine_statistical_rounds(params)
+    if params.verbosity == 'verbose':
+        print('Calculating boomerang rounds')
+    boomerang_rounds = determine_boomerang_rounds(params)
+    if params.verbosity == 'verbose':
+        print('Calculating derivative rounds')
+    derivative_rounds = determine_derivative_rounds(params)
+    if params.verbosity == 'verbose':
+        print('Calculating interpolation rounds')
+    interpolation_rounds = determine_interpolation_rounds(params)
+    if params.verbosity == 'verbose':
+        print('Calculating round-key guessing rounds')
+    keyguess_state_rounds = determine_keyguess_state_rounds(params)
+    keyguess_bit_rounds = determine_keyguess_bit_rounds(params)
+    if params.verbosity == 'verbose':
+        print('Calculating impossible differential rounds')
+    impossible_rounds = determine_impossible_rounds(params)
 
-def V(m,l,i):
-    '''Number of vectors that activate i out
-       of m Sboxes with identity part length l'''
-    return choose(m,i) * 7**i * 2**l
+    distinguishers = []
+    distinguishers.append(('Statistical with state guessing',
+                           statistical_rounds + keyguess_state_rounds))
+    distinguishers.append(('Boomerang attack',
+                           boomerang_rounds))
+    distinguishers.append(('Derivative + bit guessing',
+                           derivative_rounds + keyguess_bit_rounds))
+    distinguishers.append(('Derivative + interpolation',
+                           derivative_rounds + interpolation_rounds))
+    distinguishers.append(('Find impossible differential',
+                           impossible_rounds))
 
-def prob_actiboxes(m,l,r,d):
-    '''Returns an upper bound for the probability that
-       there exist a characteristic over r rounds that
-       activates at most d Sboxes. m is the number of
-       Sboxes per Sbox layer and l is the length of
-       the identity part.'''
-    probs = [V(m,l,i)*4**i for i in range(d+1)]
-    #Probs counts the number of possible characteristics for each
-    #allowed number of activated Sboxes.
-    #Note: each input difference has 4 possible output differences
-    for rnd in range(2, r+1):
-        newprobs = [0 for i in range(d+1)]
-        for i in range(d+1):
-            for j in range(d-i+1):
-                newprobs[i+j] += probs[i] * V(m,l,j) * 4**j
-        probs = newprobs
-    #Count the total number of valid characteristics
-    total = 0
-    for chars in probs:
-        total += chars
-    #Return the bound
-    tmp = max(((2**(3*m+l)-1)**(r-1) // total), 1)
-    if tmp >= 2**1024:
-        return 0.0
-    else:
-        return 1.0/tmp
-#    return 1.0 / max(((2**(3*m+l)-1)**(r-1) // total), 1)
+    print_rounds(params, distinguishers)
 
-def order(m,n,r):
-    '''Calculates an upper bound for the algebraic degree
-       after r rounds. m is the number of Sboxes per Sbox
-       layer, n ist the block size.'''
-    deg = 1;
-    for i in range(r):
-        deg = min(2*deg, m+deg, (n+deg)//2)    
-    return deg
 
-def influencerounds(m,n):
-    '''Estimate number of rounds for one bit to influence all others'''
-    return ceil(n/(7/8*m*3))
+###########################################################
+# Determining secure rounds for a range of distinguishers
+###########################################################
+def determine_statistical_rounds(params):
+    ''' Determine the number of rounds for which no good differential
+        or linear trail exists with high probability.
+    '''
+    # Determine the number of rounds using a divide-and-conquer approach
+    for round_exponent in itertools.count(0):
+        if no_good_trail_after_round(params, 2**round_exponent):
+            upper_bound = 2**round_exponent
+            lower_excl_bound = 2**(round_exponent - 1)
+            break
+    while lower_excl_bound + 1 < upper_bound:
+        rounds = lower_excl_bound + (upper_bound - lower_excl_bound) // 2
+        if no_good_trail_after_round(params, rounds):
+            upper_bound = rounds
+        else:
+            lower_excl_bound = rounds
+    return upper_bound
 
-def interpolationterms(n,m,k,rounds):
-    '''Estimate the number of different terms in the key bits that appear
-       in an interpolation attack on the last 'rounds' rounds '''
-    U = [0 for _ in range(n+1)]
-    # U[d] will hold an estimation of the number of terms with degree d
+
+def determine_boomerang_rounds(params):
+    ''' Determine the number of rounds for which no good boomerang
+        consisting of one differential trail for the top part and one
+        for the bottom part can be constructed.
+    '''
+    # Determine the number of rounds using a divide-and-conquer approach
+    for round_exponent in itertools.count(1):
+        if no_good_boomerang_after_round(params, 2**round_exponent):
+            upper_bound = 2**round_exponent
+            lower_excl_bound = 2**(round_exponent - 1)
+            break
+    while lower_excl_bound + 1 < upper_bound:
+        rounds = lower_excl_bound + (upper_bound - lower_excl_bound) // 2
+        if no_good_boomerang_after_round(params, rounds):
+            upper_bound = rounds
+        else:
+            lower_excl_bound = rounds
+    return upper_bound
+
+
+def determine_impossible_rounds(params):
+    ''' Determine the number of rounds after which it should not be possible
+        to find an impossible differential.
+    '''
+    rounds = determine_free_rounds(params)
+    rounds += 2 * impossible_listing_rounds(params)
+    rounds += min(determine_free_rounds(params),\
+                  ceil((params.data_complexity - 1) / (3 * params.sboxes)))
+    return rounds
+
+
+def determine_derivative_rounds(params):
+    ''' Determines the number of rounds after which there should be no
+        derivative that always evaluates to zero.
+    '''
+    degree_rounds = determine_degree_rounds(params)
+    influence_rounds = determine_influence_rounds(params)
+    return degree_rounds + influence_rounds
+
+
+def determine_interpolation_rounds(params):
+    ''' Determine the number of rounds needed for security against
+        interpolation attacks. This is done by testing whether
+        solving the linear system of equations takes more time
+        or data than allowed.
+    '''
+    for rounds in itertools.count(1):
+        terms = interpolation_terms(params, rounds)
+        if log2(terms) >= params.keysize/2.3 \
+           or log2(terms) >= params.data_complexity:
+        # the 2.3 is used here as a lower bound on the complexity of solving
+        # a system of linear equations.
+            return rounds
+
+
+def determine_keyguess_state_rounds(params):
+    ''' Determine how many rounds back it is possible to guess the full
+        state given the computationals constraints.
+    '''
+    return params.keysize // (3 * params.sboxes)
+
+
+def determine_keyguess_bit_rounds(params):
+    ''' Determine how many rounds back it is possible to guess a single
+        bit of the state given the computationals constraints.
+    '''
+    free_rounds = determine_free_rounds(params)
+    guess_state_rounds = determine_keyguess_state_rounds(params)
+    return free_rounds + guess_state_rounds
+
+
+####################################################
+# Statistical and boomerang distinguisher functions
+####################################################
+def no_good_trail_after_round(params, rounds):
+    ''' Determines whether a good trail exists after 'rounds' rounds.
+    '''
+    # A "good" trail should have a probability higher than
+    # 2^-(data_complexity)
+    max_active_sboxes = params.data_complexity // 2
+    all_good_trails = all_possible_good_trails(params, max_active_sboxes, rounds)
+    # To realize a trail the linear layers have to connect corresponding
+    # differences. The inverse of the probability that this happens for
+    # any given trail consisting of 'rounds' single round differentials
+    # is now calculated as:
+    inv_realization_probability = (2**params.blocksize - 1)**(rounds - 1)
+    # We would like that the probability that at least one trail is
+    # realized times the number of all good trails is smaller than the
+    # negligible probability.
+    return int(1/NEGL_PROB) * all_good_trails < inv_realization_probability
+
+
+def all_possible_good_trails(params, max_active_sboxes, rounds):
+    ''' Returns an upper bound for the probability that
+        there exist a trails over 'rounds' rounds that
+        activates at most 'max_active_sboxes' Sboxes.
+    '''
+    current_trails = [0 for _ in range(max_active_sboxes + 1)]
+    # Store the number of good trails after 1 round
+    for active_sboxes in range(max_active_sboxes + 1):
+        current_trails[active_sboxes] = one_round_trails(params, active_sboxes)
+    for _ in range(2, rounds + 1):
+        new_trails = [0 for _ in range(max_active_sboxes + 1)]
+        for prev_actives in range(max_active_sboxes + 1):
+            for new_actives in range(max_active_sboxes - prev_actives + 1):
+                new_trails[prev_actives + new_actives] \
+                  += current_trails[prev_actives] \
+                     * one_round_trails(params, new_actives)
+        current_trails = new_trails
+    # Count the total number of valid trails
+    all_good_trails = sum(current_trails)
+    return all_good_trails
+
+
+def no_good_boomerang_after_round(params, rounds):
+    ''' Determines whether a good boomerang trail exists after 'rounds'
+        rounds.
+    '''
+    # Since boomerang trails are used twice, each S-box contributes now
+    # a probability of 2^-4.
+    max_actives = params.data_complexity // 4
+    top_rounds = rounds // 2
+    bottom_rounds = rounds - top_rounds
+    # Note: Boomerang probability for a sub-characteristic
+    #       has to be a fourth of the normal bound
+    combination_is_secure = []
+    for top_actives in range(max_actives + 1):
+        bottom_actives = max_actives - top_actives
+        top_good_trails = all_possible_good_trails(params, top_actives, top_rounds)
+        bottom_good_trails = \
+                all_possible_good_trails(params, bottom_actives, bottom_rounds)
+        inv_top_realization_prob = (2**params.blocksize - 1)**(top_rounds - 1)
+        inv_bottom_realization_prob = (2**params.blocksize - 1)**(bottom_rounds - 1)
+        if int(1/NEGL_PROB) * top_good_trails < inv_top_realization_prob or \
+           int(1/NEGL_PROB) * bottom_good_trails < inv_bottom_realization_prob:
+            combination_is_secure.append(True)
+        else:
+            combination_is_secure.append(False)
+            break
+    return all(combination_is_secure)
+
+
+def one_round_trails(params, active_sboxes):
+    ''' Number of one-round trails activating exactly 'active_sboxes'
+        S-boxes.
+    '''
+    # There are exactly 4 possible output differences for a fixed input
+    # to an S-box
+    return activating_vectors(params, active_sboxes) * 4 ** active_sboxes
+
+
+def activating_vectors(params, active_sboxes):
+    ''' Number of vectors that activate the given number of active
+        S-boxes out of all S-boxes with the given length of
+        the identity part of the nonlinear layer
+    '''
+    return choose(params.sboxes, active_sboxes) * 7**active_sboxes \
+           * 2**params.identity_bits
+
+
+####################################################
+# Impossible distinguisher functions
+####################################################
+def determine_free_rounds(params):
+    ''' Determine the maximal number of rounds for which there exists a bit
+        that depends only linearly on the input bits.
+    '''
+    return (params.blocksize - 1) // (3 * params.sboxes) + 1
+
+
+def impossible_listing_rounds(params):
+    ''' Determine the number of rounds after which it should not be possible
+        to determine a single non-trivial impossible output difference, given
+        a fixed, random input difference.
+    '''
+    rounds = 0
+    diffusion_per_round = 2 * 7.0 / 8 * params.sboxes
+    diffusion = 0.0
+    # If there are either to many possible differences or all non-zero
+    # differences are possible, return the rounds
+    while diffusion < params.keysize and diffusion < params.blocksize:
+        rounds += 1
+        diffusion += diffusion_per_round
+    return rounds
+
+
+####################################################
+# Derivative distinguisher functions
+####################################################
+def determine_degree_rounds(params):
+    ''' Determine the number of rounds needed so that the maximal possible
+        degree is not smaller than the allowed data complexity minus one.
+    '''
+    for rounds in itertools.count(1):
+        max_degree = determine_degree_upper_bound(params, rounds)
+        if max_degree >= params.data_complexity - 1:
+            return rounds
+
+
+def determine_degree_upper_bound(params, rounds):
+    ''' Calculates an upper bound for the algebraic degree
+        after r rounds. m is the number of Sboxes per Sbox
+        layer, n ist the block size.
+    '''
+    degree = 1
+    for _ in range(rounds):
+        degree = min(2*degree, params.sboxes+degree, \
+                     (params.blocksize+degree)//2)
+    return degree
+
+
+def determine_influence_rounds(params):
+    ''' Estimate number of rounds for one bit to influence all others
+    '''
+    return ceil(params.blocksize / (7 / 8 * params.sboxes * 3))
+
+
+####################################################
+# Interpolation distinguisher functions
+####################################################
+def interpolation_terms(params, rounds):
+    ''' Estimate the number of different terms in the key bits that appear
+        in an interpolation attack on the last 'rounds' rounds
+    '''
+    keybit_terms = [0 for _ in range(params.blocksize + 1)]
+    # keybit_terms[d] will hold an estimation of the number of terms
+    # in the key bits of degree d
     # After 1 round
-    U[0] = 1
-    U[1] = n
-    U[2] = 3*m
+    keybit_terms[0] = 1
+    keybit_terms[1] = params.blocksize
+    keybit_terms[2] = 3 * params.sboxes
     # For each additional round
-    for r in range(1, rounds):
-        # Store the new number of terms in newU
-        newU = []
+    for _ in range(1, rounds):
+        # Store the new number of terms in newkeybit_terms
+        newkeybit_terms = []
         # The number of constant terms and linear terms is always 1 and n
-        newU.append(1)
-        newU.append(n)
+        newkeybit_terms.append(1)
+        newkeybit_terms.append(params.blocksize)
         # The terms of higher degree are generated by multiplying terms
         # of lower degree
-        for d in range(2,n+1):
-            tmp = 0
-            for i in range(0,d//2+1):
-                tmp += U[i]*U[d-i]
-            newU.append( min(tmp, choose(n,d)) )
-            # The number of terms of degree d is always upper bounded by
-            # choose(n, d)
-        U = newU
-    # To estimate the number of terms we combined the estimate
+        for degree in range(2, params.blocksize + 1):
+            terms_of_degree = 0
+            for degree_1st_factor in range(0, degree // 2 + 1):
+                terms_of_degree += keybit_terms[degree_1st_factor] \
+                                   * keybit_terms[degree - degree_1st_factor]
+            newkeybit_terms.append(
+                min(terms_of_degree, choose(params.blocksize, degree)))
+            # The number of terms of degree 'degree' is always upper bounded
+            # by choose(blocksize, degree).
+        keybit_terms = newkeybit_terms
+    # To estimate the number of terms we combine the estimate
     # for the number of terms in the ciphertext bits with the number
     # of terms possible for the key bits.
-    # As a term of degree d in the ciphertext bits can only have a 
-    # coefficient of degree 2**rounds-d in the key bits, we have the following
-    tms = 0
-    for d in range(2**rounds + 1):
-#        print(d, U[d], degterms(k, 2**rounds - d))
-        tms += min(U[d], degterms(k, 2**rounds - d) )
-    return tms
-
-#Set the parameters
-m = args.m
-n = args.n
-dat = args.d
-k = args.k
-l = n - 3*m
-
-#Check validity of parameters
-if n < dat or m*3 > n or any(x < 1 for x in {m,n,dat}):
-    print("Invalid parameter set")
-    exit()
+    # As a term of degree 'degree' in the ciphertext bits can only have a
+    # coefficient of degree 2**rounds-degree in the key bits, we have the
+    # following
+    terms = 0
+    for degree in range(min(2**rounds + 1, params.blocksize + 1)):
+        terms += min(keybit_terms[degree], terms_with_bounded_degree(params.keysize, \
+                   2**rounds - degree))
+    return terms
 
 
+def terms_with_bounded_degree(variables, max_degree):
+    ''' Calculate the number of possible terms of with the given maximal
+        degree in the given number of variables.
+    '''
+    terms = 0
+    for degree in range(max_degree + 1):
+        terms += choose(variables, degree)
+    return terms
 
-#Calculate bound for differentials, boomerangs and high-order
-rstat = 0
-rbmrng = 0
-rdeg = 0
-rinfl = 0
-# Bounds for normal differentials
-for r in range(1, 100000):
-    prob = prob_actiboxes(m,n-3*m, r, dat//2)
-    if prob <= charbound:
-        rstat = r
-        break
-# Bounds for boomerangs
-for r0 in range(1, 100000):
-    for r1 in range(r0,r0+2):
-        #Note: Boomerang probability for a sub-characteristic
-        #      has to be a fourth of the normal bound
-        prob = []
-        for d in range(dat//4+1):
-            p0 = prob_actiboxes(m,n-3*m, r0, d)
-            p1 = prob_actiboxes(m,n-3*m, r1, dat//4-d)
-            prob.append( min(p0,p1) )
-        if max(prob) <= charbound:
-            rbmrng = r0 + r1
-            break
+
+###################################
+# Helper functions
+###################################
+def parse_program_arguments():
+    ''' Take the command line arguments and attribute them to the
+        corresponding variables.
+    '''
+    program_description = 'Calculate the number of rounds for LowMC' \
+                          'in dependence on a given parameter set.'
+    parser = argparse.ArgumentParser(description=program_description)
+    parser.add_argument('block', type=int,
+                        help='specifies block size in bits')
+    parser.add_argument('sboxes', type=int,
+                        help='specifies number of Sboxes per nonlinear layer')
+    parser.add_argument('data', type=int,
+                        help='specifies the log2 of allowed data complexity')
+    parser.add_argument('key', type=int,
+                        help='specifies key size in bits')
+    verbosity_group = parser.add_mutually_exclusive_group()
+    verbosity_group.add_argument('-v', '--verbose', action='store_true',
+                                 help='print additional information')
+    verbosity_group.add_argument('-q', '--quiet', action='store_true',
+                                 help='only print the number of total rounds')
+    parser.add_argument('--multiplicity', '-m',\
+                        help='print multiplicative complexities',\
+                        action='store_true')
+    arguments = parser.parse_args()
+    params = Parameters(blocksize=arguments.block,
+                        sboxes=arguments.sboxes,
+                        data_complexity=arguments.data,
+                        keysize=arguments.key)
+    if arguments.verbose:
+        params.verbosity = 'verbose'
+    elif arguments.quiet:
+        params.verbosity = 'quiet'
     else:
-        continue
-    break
-    
-# Bounds for degree
-for r in range(1, 100000):
-    if order(m,n,r) >= dat-1:
-        rdeg = r
-        break
-# Calculate influence rounds
-rinfl =  influencerounds(m,n)
-
-# Calculate interpolation rounds
-rinterpol = 0
-for r in range(100000):
-    if log2(interpolationterms(n,m,k,r)) >= k/2.3:
-        rinterpol = r
-        break
-
-#Calculate outer rounds
-router = rinterpol
-
-#Calculate total number of rounds
-rtot = max(rstat, rbmrng, rdeg+rinfl) + router
+        params.verbosity = 'normal'
+    if arguments.multiplicity:
+        params.with_multiplicity = True
+    return params
 
 
-if args.quiet:
-    print(rtot)
-else:
-    if args.verbose:
-        print('Block size n:   ', n)
-        print('# of Sboxes m:  ', m)
-        print('Data security d:', dat)
-        print('Negligible probability:', charbound)
-        print('----------')
-    print('rstat:         {:>4}'.format(rstat), end='')
-    print('\t\tANDdepth: {:>5}'.format(rtot) )
-    print('rbmrng:        {:>4}'.format(rbmrng), end='')
-    print('\t\tANDs:     {:>5}'.format(rtot*3*m) )
-    print('rinfl:         {:>4}'.format(rinfl), end='')
-    print('\t\tANDs/bit: {:>5}'.format(round(rtot*3*m/n,2)) )
-    print('rdeg:          {:>4}'.format(rdeg), end='')
-    print()
-    print('rdeg + rinfl:  {:>4}'.format(rdeg+rinfl), end='')
-    print()
-    print('rinterpol:     {:>4}'.format(rinterpol), end='')
-    print()
-    print('router:        {:>4}'.format(router), end='')
-    print()
-    print('-----------------')
-    print('total:         {:>4}'.format(rtot), sep='')
-    print()
+def check_parameter_validity(params):
+    ''' Check if the given parameters are coherent and valid.
+    '''
+    if params.blocksize < params.data_complexity \
+       or params.sboxes * 3 > params.blocksize \
+       or params.data_complexity > params.keysize \
+       or any(p < 1 for p in {params.sboxes, params.blocksize,\
+                              params.data_complexity, params.keysize}):
+        print("Invalid parameter set")
+        exit()
 
+
+def print_rounds(params, distinguishers):
+    ''' Print information the total rounds for the parameter set, the
+        rounds for each distinguisher and the parameter set, dependent
+        on the verbosity level.
+    '''
+    total_rounds = max(d[1] for d in distinguishers)
+    if params.verbosity != 'quiet':
+        print('-' * 46)
+        print('Distinguisher', ' ' * 27, 'Rounds', sep='')
+        print('-' * 46)
+        for dist in distinguishers:
+            print(dist[0], ' ' * (40 - len(dist[0])), sep='', end='')
+            print('{:>6}'.format(dist[1]))
+        print('-' * 46)
+        print('Secure rounds:', ' ' * 26, sep='', end='')
+        print('{:>6}'.format(total_rounds))
+    else:
+        print(total_rounds)
+    if params.with_multiplicity:
+        print('-' * 46)
+        print('Total number of ANDs:', ' ' * 19, sep='', end='')
+        print('{:>6}'.format(total_rounds * 3 * params.sboxes))
+        print('Number of ANDs per bit:', ' ' * 17, sep='', end='')
+        print('{:6.2f}'.format(total_rounds * 3.0 * params.sboxes \
+                               / params.blocksize))
+        print('AND-depth:', ' ' * 30, sep='', end='')
+        print('{:>6}'.format(total_rounds))
+
+
+def choose(z, n):
+    ''' Calculates the binomial coefficient  "z choose n".
+    '''
+    numerator, denominator = 1, 1
+    for i in range(n):
+        numerator *= z - i
+        denominator *= i + 1
+    return numerator // denominator
+
+
+#################################
+# Parameter class
+#################################
+
+class Parameters:
+    ''' This class contains the parameter set of a LowMC instantiation
+    '''
+    def __init__(self, blocksize, sboxes, data_complexity, keysize):
+        self.blocksize = blocksize
+        self.sboxes = sboxes
+        self.data_complexity = data_complexity
+        self.keysize = keysize
+        self.identity_bits = blocksize - 3 * sboxes
+        self.verbosity = 'normal'
+        self.with_multiplicity = False
+    def print(self):
+        ''' Print the parameters.
+        '''
+        print('Block size:     ', self.blocksize)
+        print('# of Sboxes:    ', self.sboxes)
+        print('Data complexity:', self.data_complexity)
+        print('Key size:       ', self.keysize)
+
+
+
+##################################
+# Executed code
+##################################
+if __name__ == '__main__':
+    main()
