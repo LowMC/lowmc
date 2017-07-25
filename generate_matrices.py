@@ -39,7 +39,6 @@ def main():
                 s += str(row) + '\n'
             matfile.write(s)
 
-        matfile.write(s)
         s = '\nRound constants\n'\
               '---------------------'
         matfile.write(s)
@@ -51,8 +50,8 @@ def main():
         s = '\nRound key matrices\n'\
               '---------------------'
         matfile.write(s)
-        for r in range(rounds):
-            s = '\nRound key matrix ' + str(r + 1) + ':\n'
+        for r in range(rounds + 1):
+            s = '\nRound key matrix ' + str(r) + ':\n'
             for row in roundkey_matrices[r]:
                 s += str(row) + '\n'
             matfile.write(s)
