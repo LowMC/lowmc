@@ -20,7 +20,7 @@ def main():
 
     roundkey_matrices = []
     for _ in range(rounds + 1):
-        mat = instantiate_matrix(keysize, blocksize, gen)
+        mat = instantiate_matrix(blocksize, keysize, gen)
         roundkey_matrices.append(mat)
 
     with open('matrices_and_constants.dat', 'w') as matfile:
