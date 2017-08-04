@@ -27,6 +27,8 @@ public:
     block encrypt (const block message);
     block decrypt (const block message);
     void set_key (keyblock k);
+
+    void print_matrices();
     
 private:
 // LowMC private data members //

@@ -42,6 +42,67 @@ void LowMC::set_key (keyblock k) {
 }
 
 
+void LowMC::print_matrices() {
+    std::cout << "LowMC matrices and constants" << std::endl;
+    std::cout << "============================" << std::endl;
+    std::cout << "Block size: " << blocksize << std::endl;
+    std::cout << "Key size: " << keysize << std::endl;
+    std::cout << "Rounds: " << rounds << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "Linear layer matrices" << std::endl;
+    std::cout << "---------------------" << std::endl;
+    for (unsigned r = 1; r <= rounds; ++r) {
+        std::cout << "Linear layer " << r << ":" << std::endl;
+        for (auto row: LinMatrices[r-1]) {
+            std::cout << "[";
+            for (unsigned i = 0; i < blocksize; ++i) {
+                std::cout << row[i];
+                if (i != blocksize - 1) {
+                    std::cout << ", ";
+                }
+            }
+            std::cout << "]" << std::endl;
+        }
+        std::cout << std::endl;
+    }
+
+    std::cout << "Round constants" << std::endl;
+    std::cout << "---------------------" << std::endl;
+    for (unsigned r = 1; r <= rounds; ++r) {
+        std::cout << "Round constant " << r << ":" << std::endl;
+        std::cout << "[";
+        for (unsigned i = 0; i < blocksize; ++i) {
+            std::cout << roundconstants[r-1][i];
+            if (i != blocksize - 1) {
+                std::cout << ", ";
+            }
+        }
+        std::cout << "]" << std::endl;
+        std::cout << std::endl;
+    }
+    
+    std::cout << "Round key matrices" << std::endl;
+    std::cout << "---------------------" << std::endl;
+    for (unsigned r = 0; r <= rounds; ++r) {
+        std::cout << "Round key matrix " << r << ":" << std::endl;
+        for (auto row: KeyMatrices[r]) {
+            std::cout << "[";
+            for (unsigned i = 0; i < keysize; ++i) {
+                std::cout << row[i];
+                if (i != keysize - 1) {
+                    std::cout << ", ";
+                }
+            }
+            std::cout << "]" << std::endl;
+        }
+        if (r != rounds) {
+            std::cout << std::endl;
+        }
+    }
+}
+
+
 /////////////////////////////
 // LowMC private functions //
 /////////////////////////////
