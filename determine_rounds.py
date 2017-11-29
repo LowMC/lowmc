@@ -40,10 +40,10 @@ def main():
     if params.verbosity == 'verbose':
         print('Calculating round-key guessing rounds')
     keyguess_state_rounds = determine_keyguess_state_rounds(params)
-    keyguess_bit_rounds = determine_keyguess_bit_rounds(params)
+    keyguess_bit_rounds = determine_keyguess_bit_rounds(params, 1)
     if params.verbosity == 'verbose':
-        print('Calculating impossible differential rounds')
-    impossible_rounds = determine_impossible_rounds(params)
+        print('Calculating polytopic attack rounds')
+    polytopic_rounds = determine_polytopic_attack_rounds(params)
 
     distinguishers = []
     distinguishers.append(('Statistical with state guessing',
@@ -54,8 +54,8 @@ def main():
                            derivative_rounds + keyguess_bit_rounds))
     distinguishers.append(('Derivative + interpolation',
                            derivative_rounds + interpolation_rounds))
-    distinguishers.append(('Find impossible differential',
-                           impossible_rounds))
+    distinguishers.append(('Impossible polytopic attack',
+                           polytopic_rounds))
 
     print_rounds(params, distinguishers)
 
@@ -106,9 +106,9 @@ def determine_impossible_rounds(params):
     ''' Determine the number of rounds after which it should not be possible
         to find an impossible differential.
     '''
-    rounds = determine_free_rounds(params)
-    rounds += 2 * impossible_listing_rounds(params)
-    rounds += min(determine_free_rounds(params),\
+    rounds = determine_free_rounds(params, 1)
+    rounds += 2 * polytopic_listing_rounds(params, 1)
+    rounds += min(determine_free_rounds(params, 1),\
                   ceil((params.data_complexity - 1) / (3 * params.sboxes)))
     return rounds
 
@@ -120,6 +120,25 @@ def determine_derivative_rounds(params):
     degree_rounds = determine_degree_rounds(params)
     influence_rounds = determine_influence_rounds(params)
     return degree_rounds + influence_rounds
+
+
+def determine_polytopic_attack_rounds(params):
+    ''' Determine the number of rounds after which an impossible
+        polytopic attack is impossible.
+    '''
+    attacked_rounds = []
+    for ddiff_size in range(1, ceil(2 * params.keysize / params.blocksize) + 1):
+        if log2(ddiff_size + 1) > params.data_complexity:
+            continue # Initial free rounds
+        rounds = determine_free_rounds(params, ceil(log2(ddiff_size + 1)))
+        # d-difference diffusion rounds
+        rounds += polytopic_listing_rounds(params, ddiff_size)
+        # Backwards key-guessing rounds
+        rounds += polytopic_listing_rounds(params, ddiff_size) \
+                   + determine_free_rounds(params, params.blocksize \
+                   - params.data_complexity // ddiff_size)
+        attacked_rounds.append(rounds)
+    return max(attacked_rounds)
 
 
 def determine_interpolation_rounds(params):
@@ -144,11 +163,12 @@ def determine_keyguess_state_rounds(params):
     return params.keysize // (3 * params.sboxes)
 
 
-def determine_keyguess_bit_rounds(params):
-    ''' Determine how many rounds back it is possible to guess a single
-        bit of the state given the computationals constraints.
+def determine_keyguess_bit_rounds(params, dimension):
+    ''' Determine how many rounds back it is possible to guess a subspace
+        of dimension 'dimension' of the state given the computationals
+        constraints.
     '''
-    free_rounds = determine_free_rounds(params)
+    free_rounds = determine_free_rounds(params, dimension)
     guess_state_rounds = determine_keyguess_state_rounds(params)
     return free_rounds + guess_state_rounds
 
@@ -245,27 +265,63 @@ def activating_vectors(params, active_sboxes):
 ####################################################
 # Impossible distinguisher functions
 ####################################################
-def determine_free_rounds(params):
-    ''' Determine the maximal number of rounds for which there exists a bit
-        that depends only linearly on the input bits.
+def determine_free_rounds(params, dimension):
+    ''' Determine the maximal number of rounds for which there exists a
+        subspace of dimension 'dimension' that depends only linearly on
+        the input bits.
     '''
-    return (params.blocksize - 1) // (3 * params.sboxes) + 1
+    if dimension > params.blocksize:
+        raise ValueError('dimension must not be larger than blocksize')
+    if 3 * params.sboxes == params.blocksize:
+        return 0
+    else:
+        # Add 1 as security margin
+        return (params.blocksize - dimension) // (3 * params.sboxes) + 1
 
 
-def impossible_listing_rounds(params):
-    ''' Determine the number of rounds after which it should not be possible
-        to determine a single non-trivial impossible output difference, given
-        a fixed, random input difference.
+####################################################
+# Polytopic distinguisher functions
+####################################################
+def polytopic_listing_rounds(params, ddiff_size):
+    ''' Determine the number of rounds after which all d-differences are
+        reachable or after which it should not be possible
+        to list all reachable d-differences of size 'ddiff_size', given
+        a fixed, random input d-difference.
     '''
     rounds = 0
-    diffusion_per_round = 2 * 7.0 / 8 * params.sboxes
+    diffusion_per_round = \
+            calculate_average_polytopic_diffusion(params, ddiff_size)
     diffusion = 0.0
-    # If there are either to many possible differences or all non-zero
-    # differences are possible, return the rounds
-    while diffusion < params.keysize and diffusion < params.blocksize:
+    while diffusion < params.keysize and \
+          diffusion < ddiff_size * params.blocksize:
         rounds += 1
         diffusion += diffusion_per_round
     return rounds
+
+def calculate_average_polytopic_diffusion(params, ddiff_size):
+    ''' Determine the average diffusion of d-difference of size
+        'ddiff_size'.
+    '''
+    sboxes = params.sboxes
+    # In the following, we calculate the number of new d-difference
+    # generated by all possible patterns and divide by the number
+    # of all possible patterns
+    all_created_differences = 0
+    # Number of S-box d-difference with at least two non-zero differences
+    sbox_two_active = 8**ddiff_size - 1 - ddiff_size * 7
+    for inactive in range(sboxes + 1):
+        for one_active in range(sboxes - inactive + 1):
+            number_of_patterns = choose(sboxes, inactive) * \
+                    choose(sboxes - inactive, one_active) * \
+                    (ddiff_size * 7)**one_active * \
+                    sbox_two_active**(sboxes - inactive - one_active)
+            new_differences = number_of_patterns * \
+                    4**one_active * 8**(sboxes - inactive - one_active)
+            all_created_differences += new_differences
+    # Divide by number of all patterns and take log2
+    all_created_differences = log2(all_created_differences)
+    all_created_differences -= 3 * sboxes * ddiff_size
+    return all_created_differences
 
 
 ####################################################
@@ -447,6 +503,22 @@ def choose(z, n):
         denominator *= i + 1
     return numerator // denominator
 
+#################################
+# Memoization
+#################################
+
+class Memorizer:
+    def __init__(self, function):
+        self.f = function
+        self.store = {}
+    def __call__(self, *params):
+        if params not in self.store:
+            self.store[params] = self.f(*params)
+        return self.store[params]
+
+choose = Memorizer(choose)
+one_round_trails = Memorizer(one_round_trails)
+all_possible_good_trails = Memorizer(all_possible_good_trails)
 
 #################################
 # Parameter class
